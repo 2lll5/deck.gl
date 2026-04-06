@@ -4,6 +4,8 @@
 
 import {MapboxOverlay as DeckOverlay} from '@deck.gl/mapbox';
 import {GeoJsonLayer, ArcLayer} from '@deck.gl/layers';
+import {ZoomWidget, CompassWidget, FullscreenWidget, ResetViewWidget} from '@deck.gl/widgets';
+import '@deck.gl/widgets/stylesheet.css';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -22,6 +24,15 @@ const map = new maplibregl.Map({
 
 const deckOverlay = new DeckOverlay({
   interleaved: true,
+  widgets: [
+    // viewId: 'mapbox' widgets are positioned by the map's control container,
+    // alongside native map controls like NavigationControl
+    new ZoomWidget({viewId: 'mapbox', placement: 'top-right'}),
+    new CompassWidget({viewId: 'mapbox', placement: 'top-right'}),
+    new ResetViewWidget({viewId: 'mapbox', placement: 'top-right'}),
+    // Default widgets (no viewId) are positioned by deck.gl's own overlay
+    new FullscreenWidget({placement: 'top-left'})
+  ],
   layers: [
     new GeoJsonLayer({
       id: 'airports',
@@ -55,4 +66,5 @@ const deckOverlay = new DeckOverlay({
 });
 
 map.addControl(deckOverlay);
-map.addControl(new maplibregl.NavigationControl());
+// Native map control alongside deck.gl widgets with viewId: 'mapbox'
+map.addControl(new maplibregl.NavigationControl(), 'top-right');
