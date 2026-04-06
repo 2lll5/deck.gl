@@ -723,3 +723,147 @@ test('MapboxOverlay#widgets - interleaved mode', () => {
   map.removeControl(overlay);
   expect(overlay._widgetControls.length, 'Widget controls are cleaned up').toBe(0);
 });
+
+test('MapboxOverlay#widgets - placement change recreates control', () => {
+  const map = new MockMapboxMap({
+    center: {lng: -122.45, lat: 37.78},
+    zoom: 14
+  });
+
+  const widget = new TestWidget({id: 'my-widget', viewId: 'mapbox', placement: 'top-right'});
+  const overlay = new MapboxOverlay({
+    device: overlaidTestDevice,
+    layers: [new ScatterplotLayer()],
+    widgets: [widget]
+  });
+
+  map.addControl(overlay);
+  expect(overlay._widgetControls.length).toBe(1);
+  const originalControl = overlay._widgetControls[0];
+  const originalContainer = widget.props._container;
+
+  // Same id but different placement - should recreate the control
+  const widget2 = new TestWidget({id: 'my-widget', viewId: 'mapbox', placement: 'bottom-left'});
+  overlay.setProps({
+    widgets: [widget2]
+  });
+
+  expect(overlay._widgetControls.length, 'Still one widget control').toBe(1);
+  expect(
+    overlay._widgetControls[0] !== originalControl,
+    'New control instance created'
+  ).toBeTruthy();
+  expect(widget2.props._container, 'New widget has _container set').toBeTruthy();
+  expect(
+    widget2.props._container !== originalContainer,
+    'New container created for new placement'
+  ).toBeTruthy();
+  expect(map.hasControl(originalControl), 'Old control removed from map').toBeFalsy();
+  expect(map.hasControl(overlay._widgetControls[0]), 'New control added to map').toBeTruthy();
+
+  map.removeControl(overlay);
+});
+
+test('MapboxOverlay#widgets - setWidget updates control widget reference', () => {
+  const map = new MockMapboxMap({
+    center: {lng: -122.45, lat: 37.78},
+    zoom: 14
+  });
+
+  const widget1 = new TestWidget({id: 'my-widget', viewId: 'mapbox', placement: 'top-right'});
+  const overlay = new MapboxOverlay({
+    device: overlaidTestDevice,
+    layers: [new ScatterplotLayer()],
+    widgets: [widget1]
+  });
+
+  map.addControl(overlay);
+  const control = overlay._widgetControls[0];
+  expect(control.widget, 'Control initially references widget1').toBe(widget1);
+
+  // New instance with same id and placement - control is reused
+  const widget2 = new TestWidget({id: 'my-widget', viewId: 'mapbox', placement: 'top-right'});
+  overlay.setProps({
+    widgets: [widget2]
+  });
+
+  expect(overlay._widgetControls[0], 'Same control instance reused').toBe(control);
+  expect(control.widget, 'Control widget reference updated to widget2').toBe(widget2);
+
+  map.removeControl(overlay);
+});
+
+test('MapboxOverlay#widgets - onRemove clears widget _container', () => {
+  const map = new MockMapboxMap({
+    center: {lng: -122.45, lat: 37.78},
+    zoom: 14
+  });
+
+  const widget = new TestWidget({id: 'mapbox-widget', viewId: 'mapbox', placement: 'top-right'});
+  const overlay = new MapboxOverlay({
+    device: overlaidTestDevice,
+    layers: [new ScatterplotLayer()],
+    widgets: [widget]
+  });
+
+  map.addControl(overlay);
+  expect(widget.props._container, '_container is set after addControl').toBeTruthy();
+
+  map.removeControl(overlay);
+  expect(widget.props._container, '_container is cleared after removeControl').toBeFalsy();
+});
+
+test('MapboxOverlay#widgets - getDefaultPosition maps placement correctly', () => {
+  const map = new MockMapboxMap({
+    center: {lng: -122.45, lat: 37.78},
+    zoom: 14
+  });
+
+  const topRight = new TestWidget({id: 'w1', viewId: 'mapbox', placement: 'top-right'});
+  const bottomLeft = new TestWidget({id: 'w2', viewId: 'mapbox', placement: 'bottom-left'});
+  const fillWidget = new TestWidget({id: 'w3', viewId: 'mapbox', placement: 'fill'});
+
+  const overlay = new MapboxOverlay({
+    device: overlaidTestDevice,
+    layers: [new ScatterplotLayer()],
+    widgets: [topRight, bottomLeft, fillWidget]
+  });
+
+  map.addControl(overlay);
+  expect(overlay._widgetControls.length).toBe(3);
+
+  // Check that mock map recorded the correct positions
+  const controlEntries = map._controls.filter(
+    c => c.control !== overlay // exclude the overlay itself
+  );
+  const positions = controlEntries.map(c => c.position);
+  expect(positions, 'Positions match widget placements').toEqual([
+    'top-right',
+    'bottom-left',
+    'top-left' // 'fill' falls back to 'top-left'
+  ]);
+
+  map.removeControl(overlay);
+});
+
+test('MapboxOverlay#widgets - null widgets in array are filtered', () => {
+  const map = new MockMapboxMap({
+    center: {lng: -122.45, lat: 37.78},
+    zoom: 14
+  });
+
+  const widget = new TestWidget({id: 'valid-widget', viewId: 'mapbox', placement: 'top-right'});
+  const overlay = new MapboxOverlay({
+    device: overlaidTestDevice,
+    layers: [new ScatterplotLayer()],
+    widgets: [null as any, widget, undefined as any]
+  });
+
+  map.addControl(overlay);
+
+  expect(overlay._deck, 'Deck instance is created').toBeTruthy();
+  expect(overlay._widgetControls.length, 'Only valid mapbox widget creates a control').toBe(1);
+  expect(widget.props._container, 'Valid widget _container is set').toBeTruthy();
+
+  map.removeControl(overlay);
+});
