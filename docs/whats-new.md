@@ -13,9 +13,14 @@ Target release date: March 2026
 - [TextLayer](./api-reference/layers/text-layer.md) now supports per-object clipping box; and making text "sticky" when its container is partially off-screen. See a demo with this [new example](https://deck.gl/examples/text-layer-clipping).
 - WebGPU now materializes constant layer attributes into full buffers through `AttributeManager`, improving compatibility for layers that rely on constant accessors.
 
-### @deck.gl/mapbox
+### Basemap Integration
 
-In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop.
+- In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop.
+- `MapboxOverlay` now automatically injects a `MapView` with id `"mapbox"` when custom views are provided, ensuring consistent behavior between overlaid and interleaved modes.
+- deck.gl widgets can now be positioned alongside native map controls (e.g. `NavigationControl`) by setting `viewId: 'mapbox'` on the widget. See [Using Widgets](./api-reference/mapbox/mapbox-overlay.md#using-widgets) for details.
+- Fixed null viewport handling when the map canvas has zero dimensions.
+- Fixed heatmap layer blending in interleaved mode.
+- Fixed Google Maps DOM positioning when `interleaved: false`.
 
 ### Views
 

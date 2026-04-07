@@ -1092,8 +1092,6 @@ test('MapboxOverlay#widgets - null widgets in array are filtered', () => {
   map.removeControl(overlay);
 });
 
-// Tests ported from mapbox-layer.spec.ts, adapted for MapboxLayerGroup
-
 test('MapboxLayerGroup#external Deck lifecycle', async () => {
   const deck = new Deck({
     device,
