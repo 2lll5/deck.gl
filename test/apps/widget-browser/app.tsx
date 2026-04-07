@@ -9,13 +9,7 @@ import React, {useState, useCallback, useMemo} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Map, NavigationControl, useControl} from 'react-map-gl/maplibre';
 import {DeckGL} from '@deck.gl/react';
-import {
-  Deck,
-  MapView,
-  OrbitView,
-  OrthographicView,
-  PickingInfo
-} from '@deck.gl/core';
+import {Deck, MapView, OrbitView, OrthographicView, PickingInfo} from '@deck.gl/core';
 import type {MapViewState, OrbitViewState, OrthographicViewState, View} from '@deck.gl/core';
 import {DataFilterExtension} from '@deck.gl/extensions';
 import {GeoJsonLayer, ArcLayer, ScatterplotLayer} from '@deck.gl/layers';
@@ -455,9 +449,7 @@ function MultiViewTab() {
         views={views.length ? views : undefined}
         initialViewState={{latitude: 51.47, longitude: 0.45, zoom: 4}}
         layers={layers}
-        widgets={[
-          new SplitterWidget({viewLayout: SPLITTER_VIEW_LAYOUT, onChange: setViews})
-        ]}
+        widgets={[new SplitterWidget({viewLayout: SPLITTER_VIEW_LAYOUT, onChange: setViews})]}
       />
     </>
   );
@@ -466,9 +458,7 @@ function MultiViewTab() {
 // ─── Tab 4: Basemap Integration ──────────────────────────────────────
 // MapLibre basemap via react-map-gl + MapboxOverlay, testing viewId: 'mapbox'
 
-function DeckGLOverlay(
-  props: MapboxOverlayProps & {interleaved?: boolean}
-) {
+function DeckGLOverlay(props: MapboxOverlayProps & {interleaved?: boolean}) {
   const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay(props));
   overlay.setProps(props);
   return null;
