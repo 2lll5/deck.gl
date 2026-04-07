@@ -15,12 +15,12 @@ Target release date: March 2026
 
 ### Basemap Integration
 
-- In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop.
-- `MapboxOverlay` now automatically injects a `MapView` with id `"mapbox"` when custom views are provided, ensuring consistent behavior between overlaid and interleaved modes.
-- deck.gl widgets can now be positioned alongside native map controls (e.g. `NavigationControl`) by setting `viewId: 'mapbox'` on the widget. See [Using Widgets](./api-reference/mapbox/mapbox-overlay.md#using-widgets) for details.
-- Fixed null viewport handling when the map canvas has zero dimensions.
-- Fixed heatmap layer blending in interleaved mode.
-- Fixed Google Maps DOM positioning when `interleaved: false`.
+- In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop. ([#10163](https://github.com/visgl/deck.gl/pull/10163))
+- `MapboxOverlay` now automatically injects a `MapView` with id `"mapbox"` when custom views are provided, ensuring consistent behavior between overlaid and interleaved modes. ([#9947](https://github.com/visgl/deck.gl/pull/9947))
+- deck.gl widgets can now be positioned alongside native map controls (e.g. `NavigationControl`) by setting `viewId: 'mapbox'` on the widget. See [Using Widgets](./api-reference/mapbox/mapbox-overlay.md#using-widgets) for details. ([#9962](https://github.com/visgl/deck.gl/pull/9962))
+- Fixed null viewport handling when the map canvas has zero dimensions. ([#10076](https://github.com/visgl/deck.gl/pull/10076), [#10086](https://github.com/visgl/deck.gl/pull/10086))
+- Fixed heatmap layer blending in interleaved mode. ([#9993](https://github.com/visgl/deck.gl/pull/9993))
+- Fixed Google Maps DOM positioning when `interleaved: false`. ([#9992](https://github.com/visgl/deck.gl/pull/9992))
 
 ### Views
 
