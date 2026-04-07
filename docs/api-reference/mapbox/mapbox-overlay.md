@@ -166,7 +166,7 @@ See [Deck.getCanvas](../core/deck.md#getcanvas). When using `interleaved: true`,
 
 ### Using Widgets
 
-deck.gl [widgets](../widgets/widget.md) can be used with `MapboxOverlay`. There are two positioning modes, controlled by the widget's `viewId` prop:
+deck.gl [widgets](../widgets/overview.md) can be used with `MapboxOverlay`. There are two positioning modes, controlled by the widget's `viewId` prop:
 
 #### Default positioning (deck.gl overlay)
 
