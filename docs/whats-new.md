@@ -6,37 +6,6 @@ This page contains highlights of each deck.gl release. Also check our [vis.gl bl
 
 Target release date: March 2026
 
-### Layers
-
-![TextLayer clipping feature](https://github.com/visgl/deck.gl-data/blob/master/images/whats-new/text-clipping.gif?raw=true)
-
-- [TextLayer](./api-reference/layers/text-layer.md) now supports per-object clipping box; and making text "sticky" when its container is partially off-screen. See a demo with this [new example](https://deck.gl/examples/text-layer-clipping).
-- WebGPU now materializes constant layer attributes into full buffers through `AttributeManager`, improving compatibility for layers that rely on constant accessors.
-
-### Basemap Integration
-
-- In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop. ([#10163](https://github.com/visgl/deck.gl/pull/10163))
-- `MapboxOverlay` now automatically injects a `MapView` with id `"mapbox"` when custom views are provided, ensuring consistent behavior between overlaid and interleaved modes. ([#9947](https://github.com/visgl/deck.gl/pull/9947))
-- deck.gl widgets can now be positioned alongside native map controls (e.g. `NavigationControl`) by setting `viewId: 'mapbox'` on the widget. See [Using Widgets](./api-reference/mapbox/mapbox-overlay.md#using-widgets) for details. ([#9962](https://github.com/visgl/deck.gl/pull/9962))
-- Fixed null viewport handling when the map canvas has zero dimensions. ([#10076](https://github.com/visgl/deck.gl/pull/10076), [#10086](https://github.com/visgl/deck.gl/pull/10086))
-- Fixed heatmap layer blending in interleaved mode. ([#9993](https://github.com/visgl/deck.gl/pull/9993))
-- Fixed Google Maps DOM positioning when `interleaved: false`. ([#9992](https://github.com/visgl/deck.gl/pull/9992))
-
-### Views
-
-View layout props (`x`, `y`, `width`, `height`, and padding) now accept CSS-style expressions such as `calc(50% - 10px)` so you can mix relative percentages with fixed pixel offsets when arranging multi-view layouts.
-
-It is a common use case for apps to constrain view state to the area where data is available. In 9.3, all controllers add a new option `maxBounds` that will:
-- Automatically zoom/pan viewport to fit content
-- Prevent user from navigating outside of the content bounding box
-
-Individual view improvements:
-- [MapController](./api-reference/core/map-controller.md) adds a new option `rotationPivot` for more natural interaction with terrain / 3D tiles that are not at sea level. See [PR#9938](https://github.com/visgl/deck.gl/pull/9938) for demos.
-- [GlobeController](./api-reference/core/globe-controller.md) gets major bug fixes and is more stable.
-- [OrthographicView](./api-reference/core/orthographic-view.md) is moving away from 2d-array zoom and adds per-axis `zoom*`, `minZoom*`, `maxZoom*` props.
-- [OrbitController](./api-reference/core/orbit-controller.md) works more intuitively when used with `maxBounds` and pickable layers.
-
-
 ### Widgets
 
 
@@ -85,15 +54,14 @@ Aside from the above, all widgets also received the following improvements:
 - [TileLayer](./api-reference/geo-layers/tile-layer.md) adds new `visibleMinZoom` and `visibleMaxZoom` props to control the zoom range at which tiles are drawn, independent of the zoom range at which data is loaded.
 - WebGPU now materializes constant layer attributes into full buffers through `AttributeManager`, improving compatibility for layers that rely on constant accessors.
 
-### @deck.gl/mapbox
+### Basemap Integration
 
-In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop.
-
-### Views
-
-View layout props (`x`, `y`, `width`, `height`, and padding) now accept CSS-style expressions such as `calc(50% - 10px)` so you can mix relative percentages with fixed pixel offsets when arranging multi-view layouts.
-
-- [OrthographicView](./api-reference/core/orthographic-view.md) is moving away from 2d-array zoom and adds per-axis `zoom*`, `minZoom*`, `maxZoom*` props.
+- In interleaved mode, `MapboxOverlay` now always renders layers in groups by `beforeId` or `slot`. This enables cross-layer extension handling (e.g. MaskExtension, CollisionFilterExtension) by default, without needing the previously experimental `_renderLayersInGroups` prop. ([#10163](https://github.com/visgl/deck.gl/pull/10163))
+- `MapboxOverlay` now automatically injects a `MapView` with id `"mapbox"` when custom views are provided, ensuring consistent behavior between overlaid and interleaved modes. ([#9947](https://github.com/visgl/deck.gl/pull/9947))
+- deck.gl widgets can now be positioned alongside native map controls (e.g. `NavigationControl`) by setting `viewId: 'mapbox'` on the widget. See [Using Widgets](./api-reference/mapbox/mapbox-overlay.md#using-widgets) for details. ([#9962](https://github.com/visgl/deck.gl/pull/9962))
+- Fixed null viewport handling when the map canvas has zero dimensions. ([#10076](https://github.com/visgl/deck.gl/pull/10076), [#10086](https://github.com/visgl/deck.gl/pull/10086))
+- Fixed heatmap layer blending in interleaved mode. ([#9993](https://github.com/visgl/deck.gl/pull/9993))
+- Fixed Google Maps DOM positioning when `interleaved: false`. ([#9992](https://github.com/visgl/deck.gl/pull/9992))
 
 ### Improved 3D Support
 
