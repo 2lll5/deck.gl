@@ -6,6 +6,7 @@ import {test, expect} from 'vitest';
 import {MapView} from '@deck.gl/core';
 import ViewManager from '@deck.gl/core/lib/view-manager';
 import {equals} from '@math.gl/core';
+import {EventManager} from 'mjolnir.js';
 
 test('ViewManager#constructor', () => {
   const viewManager = new ViewManager({
@@ -212,6 +213,50 @@ test('ViewManager#update view props', () => {
     'Map center is calculated correctly'
   ).toBeTruthy();
 
+  viewManager.finalize();
+});
+
+test('ViewManager#multi-canvas layout and controller rebinding', () => {
+  const leftEventManager = new EventManager(document.createElement('div'));
+  const rightEventManager = new EventManager(document.createElement('div'));
+
+  const leftView = new MapView({id: 'left', canvasId: 'left-canvas', controller: true});
+  const rightView = new MapView({id: 'right', canvasId: 'right-canvas', controller: true});
+
+  const viewManager = new ViewManager({
+    views: [leftView, rightView],
+    viewState: {
+      left: {longitude: -122, latitude: 38, zoom: 10},
+      right: {longitude: -74, latitude: 40.7, zoom: 11}
+    },
+    width: 1,
+    height: 1,
+    canvasMetrics: {
+      'left-canvas': {width: 200, height: 100},
+      'right-canvas': {width: 120, height: 180}
+    },
+    eventManagers: {
+      'left-canvas': leftEventManager,
+      'right-canvas': rightEventManager
+    },
+    eventManager: leftEventManager
+  });
+
+  expect(viewManager.getCanvasId('left')).toBe('left-canvas');
+  expect(viewManager.getCanvasId('right')).toBe('right-canvas');
+  expect(viewManager.getViewport('left')?.width).toBe(200);
+  expect(viewManager.getViewport('right')?.height).toBe(180);
+
+  const originalLeftController = viewManager.controllers.left;
+  viewManager.setProps({
+    views: [new MapView({id: 'left', canvasId: 'right-canvas', controller: true}), rightView]
+  });
+
+  expect(viewManager.getCanvasId('left')).toBe('right-canvas');
+  expect(viewManager.controllers.left).not.toBe(originalLeftController);
+
+  leftEventManager.destroy();
+  rightEventManager.destroy();
   viewManager.finalize();
 });
 

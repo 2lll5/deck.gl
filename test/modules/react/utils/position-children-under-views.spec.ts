@@ -45,26 +45,27 @@ test('positionChildrenUnderViews#before initialization', () => {
     children: TEST_CHILDREN,
     deck: null
   });
-  expect(children.length, 'Should not fail if deck is not initialized').toBe(0);
+  expect(Object.keys(children).length, 'Should not fail if deck is not initialized').toBe(0);
 
   children = positionChildrenUnderViews({
     children: TEST_CHILDREN,
     deck: {}
   });
-  expect(children.length, 'Should not fail if deck is not initialized').toBe(0);
+  expect(Object.keys(children).length, 'Should not fail if deck is not initialized').toBe(0);
 
   children = positionChildrenUnderViews({
     children: TEST_CHILDREN,
     deck: {viewManager: {views: []}}
   });
-  expect(children.length, 'Should not fail if deck has no view').toBe(0);
+  expect(Object.keys(children).length, 'Should not fail if deck has no view').toBe(0);
 });
 
 test('positionChildrenUnderViews', () => {
-  const children = positionChildrenUnderViews({
+  const viewsByCanvasId = positionChildrenUnderViews({
     children: TEST_CHILDREN,
     deck: {viewManager: dummyViewManager, canvas: document.createElement('canvas')}
   });
+  const children = Object.values(viewsByCanvasId).flat();
   expect(children.length, 'Returns wrapped children').toBe(2);
 
   expect(children[0].key, 'Child has deck context').toBe('view-map-context');
@@ -104,7 +105,7 @@ test('positionChildrenUnderViews', () => {
 test('positionChildrenUnderViews#override ContextProvider', () => {
   const context = React.createContext();
 
-  const children = positionChildrenUnderViews({
+  const viewsByCanvasId = positionChildrenUnderViews({
     children: TEST_CHILDREN,
     deck: {
       viewManager: dummyViewManager,
@@ -112,6 +113,7 @@ test('positionChildrenUnderViews#override ContextProvider', () => {
     },
     ContextProvider: context.Provider
   });
+  const children = Object.values(viewsByCanvasId).flat();
 
   expect(children.length, 'Returns wrapped children').toBe(2);
 

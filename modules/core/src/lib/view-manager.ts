@@ -43,9 +43,13 @@ type ViewManagerProps<ViewsT extends ViewOrViews> = {
   viewState: ViewStateObject<ViewsT> | null;
   onViewStateChange?: (params: ViewStateChangeParameters<AnyViewStateOf<ViewsT>>) => void;
   onInteractionStateChange?: (state: InteractionState) => void;
-  pickPosition?: (x: number, y: number) => {coordinate?: number[]} | null;
+  pickPosition?: (x: number, y: number, viewId?: string) => {coordinate?: number[]} | null;
   width?: number;
   height?: number;
+  /** CSS pixel sizes for each presentation canvas, keyed by canvas id. */
+  canvasMetrics?: Record<string, {width: number; height: number}>;
+  /** Per-canvas event managers, keyed by canvas id. */
+  eventManagers?: Record<string, EventManager>;
 };
 
 export default class ViewManager<ViewsT extends View[]> {
@@ -61,18 +65,23 @@ export default class ViewManager<ViewsT extends View[]> {
   private _isUpdating: boolean;
   private _needsRedraw: string | false;
   private _needsUpdate: string | false;
-  private _eventManager: EventManager;
+  private _eventManager: EventManager | null;
+  private _eventManagers: Record<string, EventManager>;
   private _eventCallbacks: {
     onViewStateChange?: (params: ViewStateChangeParameters) => void;
     onInteractionStateChange?: (state: InteractionState) => void;
   };
-  private _pickPosition?: (x: number, y: number) => {coordinate?: number[]} | null;
+  private _pickPosition?: (x: number, y: number, viewId?: string) => {coordinate?: number[]} | null;
+  private _canvasMetrics: Record<string, {width: number; height: number}>;
+  private _viewCanvasIds: {[viewId: string]: string};
+  private _viewportsByCanvasId: {[canvasId: string]: Viewport[]};
+  private _eventManagersChanged: boolean;
 
   constructor(
     props: ViewManagerProps<ViewsT> & {
       // Initial options
       timeline: Timeline;
-      eventManager: EventManager;
+      eventManager: EventManager | null;
     }
   ) {
     // List of view descriptors, gets re-evaluated when width/height changes
@@ -90,11 +99,16 @@ export default class ViewManager<ViewsT extends View[]> {
     this._needsUpdate = 'Initialize';
 
     this._eventManager = props.eventManager;
+    this._eventManagers = props.eventManagers || {};
     this._eventCallbacks = {
       onViewStateChange: props.onViewStateChange,
       onInteractionStateChange: props.onInteractionStateChange
     };
     this._pickPosition = props.pickPosition;
+    this._canvasMetrics = props.canvasMetrics || {};
+    this._viewCanvasIds = {};
+    this._viewportsByCanvasId = {};
+    this._eventManagersChanged = false;
 
     Object.seal(this);
 
@@ -149,12 +163,14 @@ export default class ViewManager<ViewsT extends View[]> {
    *   + not provided - return all viewports
    *   + {x, y} - only return viewports that contain this pixel
    *   + {x, y, width, height} - only return viewports that overlap with this rectangle
+   *   + {canvasId} - limit the search to the specified presentation canvas
    */
-  getViewports(rect?: {x: number; y: number; width?: number; height?: number}): Viewport[] {
+  getViewports(rect?: {x: number; y: number; width?: number; height?: number; canvasId?: string}): Viewport[] {
+    const viewports = rect?.canvasId ? this._viewportsByCanvasId[rect.canvasId] || [] : this._viewports;
     if (rect) {
-      return this._viewports.filter(viewport => viewport.containsPixel(rect));
+      return viewports.filter(viewport => viewport.containsPixel(rect));
     }
-    return this._viewports;
+    return viewports;
   }
 
   /** Get a map of all views */
@@ -186,6 +202,12 @@ export default class ViewManager<ViewsT extends View[]> {
 
   getViewport(viewId: string): Viewport | undefined {
     return this._viewportMap[viewId];
+  }
+
+  /** Return the presentation canvas id currently assigned to a view. */
+  getCanvasId(viewOrViewId: string | View): string | undefined {
+    const viewId = typeof viewOrViewId === 'string' ? viewOrViewId : viewOrViewId.id;
+    return this._viewCanvasIds[viewId];
   }
 
   /**
@@ -229,6 +251,14 @@ export default class ViewManager<ViewsT extends View[]> {
 
     if ('pickPosition' in props) {
       this._pickPosition = props.pickPosition;
+    }
+
+    if ('canvasMetrics' in props) {
+      this._setCanvasMetrics(props.canvasMetrics || {});
+    }
+
+    if ('eventManagers' in props) {
+      this._setEventManagers(props.eventManagers || {});
     }
 
     // Important: avoid invoking _update() inside itself
@@ -298,25 +328,63 @@ export default class ViewManager<ViewsT extends View[]> {
     }
   }
 
+  private _setCanvasMetrics(canvasMetrics: Record<string, {width: number; height: number}>): void {
+    if (!deepEqual(canvasMetrics, this._canvasMetrics, 1)) {
+      this._canvasMetrics = canvasMetrics;
+      this.setNeedsUpdate('canvasMetrics changed');
+    }
+  }
+
+  private _setEventManagers(eventManagers: Record<string, EventManager>): void {
+    if (!deepEqual(Object.keys(eventManagers), Object.keys(this._eventManagers), 1)) {
+      this._eventManagers = eventManagers;
+      this._eventManagersChanged = true;
+      this.setNeedsUpdate('eventManagers changed');
+      return;
+    }
+
+    for (const id in eventManagers) {
+      if (this._eventManagers[id] !== eventManagers[id]) {
+        this._eventManagers = eventManagers;
+        this._eventManagersChanged = true;
+        this.setNeedsUpdate(`eventManager changed for ${id}`);
+        return;
+      }
+    }
+  }
+
+  private _getCanvasMetrics(view: View): {width: number; height: number; canvasId: string} {
+    const canvasIds = Object.keys(this._canvasMetrics);
+    const canvasId = view.props.canvasId || canvasIds[0] || 'default-canvas';
+    const metrics = this._canvasMetrics[canvasId];
+    return {
+      canvasId,
+      width: metrics?.width ?? this.width,
+      height: metrics?.height ?? this.height
+    };
+  }
+
   private _createController(
     view: View,
     props: {id: string; type: ConstructorOf<Controller<any>>}
   ): Controller<any> {
     const Controller = props.type;
+    const eventManager =
+      this._eventManagers[this._viewCanvasIds[view.id]] || this._eventManager;
 
     const controller = new Controller({
       timeline: this.timeline,
-      eventManager: this._eventManager,
+      eventManager,
       // Set an internal callback that calls the prop callback if provided
       onViewStateChange: this._eventCallbacks.onViewStateChange,
       onStateChange: this._eventCallbacks.onInteractionStateChange,
       makeViewport: viewState =>
         this.getView(view.id)?.makeViewport({
           viewState,
-          width: this.width,
-          height: this.height
+          width: this._getCanvasMetrics(view).width,
+          height: this._getCanvasMetrics(view).height
         }),
-      pickPosition: this._pickPosition
+      pickPosition: (x, y) => this._pickPosition?.(x, y, view.id)
     });
 
     return controller;
@@ -358,18 +426,29 @@ export default class ViewManager<ViewsT extends View[]> {
     const {views} = this;
 
     const oldControllers = this.controllers;
+    const oldViewCanvasIds = this._viewCanvasIds;
+    const eventManagersChanged = this._eventManagersChanged;
     this._viewports = [];
     this.controllers = {};
+    this._viewCanvasIds = {};
+    this._viewportsByCanvasId = {};
+    this._eventManagersChanged = false;
 
     let invalidateControllers = false;
     // Create controllers in reverse order, so that views on top receive events first
     for (let i = views.length; i--; ) {
       const view = views[i];
+      const {canvasId, width, height} = this._getCanvasMetrics(view);
+      this._viewCanvasIds[view.id] = canvasId;
       const viewState = this.getViewState(view);
-      const viewport = view.makeViewport({viewState, width: this.width, height: this.height});
+      const viewport = view.makeViewport({viewState, width, height});
 
       let oldController = oldControllers[view.id];
       const hasController = Boolean(view.controller);
+      if (oldController && (eventManagersChanged || oldViewCanvasIds[view.id] !== canvasId)) {
+        oldController.finalize();
+        oldController = null;
+      }
       if (hasController && !oldController) {
         // When a new controller is added, invalidate all controllers below it so that
         // events are registered in the correct order
@@ -386,6 +465,8 @@ export default class ViewManager<ViewsT extends View[]> {
 
       if (viewport) {
         this._viewports.unshift(viewport);
+        this._viewportsByCanvasId[canvasId] ||= [];
+        this._viewportsByCanvasId[canvasId].unshift(viewport);
       }
     }
 

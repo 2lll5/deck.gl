@@ -3,14 +3,23 @@
 // Copyright (c) vis.gl contributors
 
 import * as React from 'react';
-import {createElement} from 'react';
+import {Children, createElement} from 'react';
 import {View} from '@deck.gl/core';
 import {inheritsFrom} from './inherits-from';
 import evaluateChildren, {isComponent} from './evaluate-children';
 
 import type {ViewOrViews} from '../deckgl';
 import type {Deck, Viewport} from '@deck.gl/core';
+import type {EventManager} from 'mjolnir.js';
 import {DeckGlContext, type DeckGLContextValue} from './deckgl-context';
+
+type DeckWithInternals = {
+  _canvasTargets?: Record<string, {canvas: HTMLCanvasElement}>;
+  canvas?: HTMLCanvasElement | null;
+  eventManager?: EventManager | null;
+  getEventManager?: (viewId?: string) => EventManager | null;
+  _onViewStateChange: (params: {viewId: string} & Record<string, unknown>) => void;
+};
 
 // Iterate over views and reposition children associated with views
 // TODO - Can we supply a similar function for the non-React case?
@@ -22,22 +31,25 @@ export default function positionChildrenUnderViews<ViewsT extends ViewOrViews>({
   children: React.ReactNode[];
   deck?: Deck<ViewsT>;
   ContextProvider?: React.Context<DeckGLContextValue>['Provider'];
-}): React.ReactNode[] {
+}): Record<string, React.ReactNode[]> {
   // @ts-expect-error accessing protected property
   const {viewManager} = deck || {};
 
   if (!viewManager || !viewManager.views.length) {
-    return [];
+    return {};
   }
+  const deckWithInternals = deck as unknown as DeckWithInternals;
 
   const views: Record<
     string,
     {
+      canvasId: string;
       viewport: Viewport;
       children: React.ReactNode[];
     }
   > = {};
   const defaultViewId = (viewManager.views[0] as View).id;
+  const defaultCanvasId = viewManager.getCanvasId?.(defaultViewId) || 'default-canvas';
 
   // Sort children by view id
   for (const child of children) {
@@ -52,6 +64,7 @@ export default function positionChildrenUnderViews<ViewsT extends ViewOrViews>({
 
     const viewport = viewManager.getViewport(viewId) as Viewport;
     const viewState = viewManager.getViewState(viewId);
+    const canvasId = viewManager.getCanvasId?.(viewId) || defaultCanvasId;
 
     // Drop (auto-hide) elements with viewId that are not matched by any current view
     if (viewport) {
@@ -69,17 +82,18 @@ export default function positionChildrenUnderViews<ViewsT extends ViewOrViews>({
 
       if (!views[viewId]) {
         views[viewId] = {
+          canvasId,
           viewport,
           children: []
         };
       }
-      views[viewId].children.push(viewChildren);
+      views[viewId].children.push(...Children.toArray(viewChildren));
     }
   }
 
   // Render views
-  return Object.keys(views).map(viewId => {
-    const {viewport, children: viewChildren} = views[viewId];
+  return Object.keys(views).reduce<Record<string, React.ReactNode[]>>((viewsByCanvasId, viewId) => {
+    const {canvasId, viewport, children: viewChildren} = views[viewId];
     const {x, y, width, height} = viewport;
     const style = {
       position: 'absolute',
@@ -97,18 +111,24 @@ export default function positionChildrenUnderViews<ViewsT extends ViewOrViews>({
     const contextValue: DeckGLContextValue = {
       deck,
       viewport,
-      // @ts-expect-error accessing protected property
-      container: deck.canvas.offsetParent,
-      // @ts-expect-error accessing protected property
-      eventManager: deck.eventManager,
+      container:
+        deckWithInternals._canvasTargets?.[canvasId]?.canvas.parentElement ||
+        (deckWithInternals.canvas?.offsetParent as HTMLElement | null) ||
+        deckWithInternals.canvas?.parentElement ||
+        document.body,
+      eventManager:
+        deckWithInternals.getEventManager?.(viewId) || deckWithInternals.eventManager || null,
       onViewStateChange: params => {
         params.viewId = viewId;
-        // @ts-expect-error accessing protected method
-        deck._onViewStateChange(params);
+        deckWithInternals._onViewStateChange(params);
       },
       widgets: []
     };
     const providerKey = `view-${viewId}-context`;
-    return createElement(ContextProvider, {key: providerKey, value: contextValue}, viewElement);
-  });
+    viewsByCanvasId[canvasId] ||= [];
+    viewsByCanvasId[canvasId].push(
+      createElement(ContextProvider, {key: providerKey, value: contextValue}, viewElement)
+    );
+    return viewsByCanvasId;
+  }, {});
 }

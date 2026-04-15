@@ -11,6 +11,7 @@ import DeckPicker from './deck-picker';
 import {Widget} from './widget';
 import {WidgetManager} from './widget-manager';
 import {TooltipWidget} from './tooltip-widget';
+import CanvasManager, {type CanvasTarget} from './canvas-manager';
 import log from '../utils/log';
 import {deepEqual} from '../utils/deep-equal';
 import typedArrayManager from '../utils/typed-array-manager';
@@ -21,7 +22,13 @@ import {webgl2Adapter} from '@luma.gl/webgl';
 import {GL} from '@luma.gl/webgl/constants';
 import {Timeline} from '@luma.gl/engine';
 import {AnimationLoop} from '@luma.gl/engine';
-import type {CanvasContextProps, Device, DeviceProps, Framebuffer, Parameters} from '@luma.gl/core';
+import type {
+  CanvasContextProps,
+  Device,
+  DeviceProps,
+  Framebuffer,
+  Parameters
+} from '@luma.gl/core';
 import type {ShaderModule} from '@luma.gl/shadertools';
 
 import {Stats} from '@probe.gl/stats';
@@ -129,6 +136,16 @@ export type DeckProps<ViewsT extends ViewOrViews = null> = {
    * Will be auto-created if not supplied.
    */
   canvas?: HTMLCanvasElement | string | null;
+  /**
+   * Presentation canvases to use for multi-canvas rendering.
+   *
+   * When this prop is defined, Deck renders into an offscreen default context and presents the
+   * result into one `PresentationContext` per canvas entry. String entries are resolved as
+   * DOM element ids. Views without an explicit `canvasId` render into the first configured canvas.
+   *
+   * This prop is not compatible with `gl`.
+   */
+  canvases?: (string | HTMLCanvasElement)[];
 
   /** Use an existing luma.gl GPU device. @note If not supplied, a new device will be created using props.deviceProps */
   device?: Device | null;
@@ -251,6 +268,7 @@ const defaultProps: DeckProps = {
   deviceProps: {} as DeviceProps,
   gl: null,
   canvas: null,
+  canvases: undefined,
   layers: [],
   effects: [],
   views: null,
@@ -310,6 +328,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   protected deckRenderer: DeckRenderer | null = null;
   protected deckPicker: DeckPicker | null = null;
   protected eventManager: EventManager | null = null;
+  protected eventManagers: Record<string, EventManager> = {};
   protected widgetManager: WidgetManager | null = null;
   protected tooltip: TooltipWidget | null = null;
   protected animationLoop: AnimationLoop | null = null;
@@ -348,18 +367,22 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   private _pointerDownPickSequence: number = 0;
 
   private _needsRedraw: false | string = 'Initial render';
+  private _canvasManager = new CanvasManager({createEventManager: root => this._createEventManager(root)});
+  private _ownedCanvas: HTMLCanvasElement | null = null;
   private _pickRequest: {
     mode: string;
     event: MjolnirPointerEvent | null;
     x: number;
     y: number;
     radius: number;
+    canvasId?: string;
     unproject3D?: boolean;
   } = {
     mode: 'hover',
     x: -1,
     y: -1,
     radius: 0,
+    canvasId: undefined,
     event: null,
     unproject3D: false
   };
@@ -371,10 +394,20 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   private _lastPointerDownInfo: PickingInfo | null = null;
   private _lastPointerDownInfoPromise: Promise<PickingInfo> | null = null;
 
+  private get _canvasTargets(): Record<string, CanvasTarget> {
+    return this._canvasManager.targets;
+  }
+
+  private get _canvasTargetOrder(): string[] {
+    return this._canvasManager.order;
+  }
+
   constructor(props: DeckProps<ViewsT>) {
     // @ts-ignore views
     this.props = {...defaultProps, ...props};
     props = this.props;
+
+    this._validateCanvasConfiguration(props);
 
     if (props.viewState && props.initialViewState) {
       log.warn(
@@ -442,37 +475,21 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     this._lastPointerDownInfo = null;
     this._lastPointerDownInfoPromise = null;
 
-    this.layerManager?.finalize();
-    this.layerManager = null;
+    this._teardownManagers();
+    this._destroyCanvasTargets();
 
-    this.viewManager?.finalize();
-    this.viewManager = null;
-
-    this.effectManager?.finalize();
-    this.effectManager = null;
-
-    this.deckRenderer?.finalize();
-    this.deckRenderer = null;
-
-    this.deckPicker?.finalize();
-    this.deckPicker = null;
-
-    this.eventManager?.destroy();
-    this.eventManager = null;
-
-    this.widgetManager?.finalize();
-    this.widgetManager = null;
-
-    if (!this.props.canvas && !this.props.device && !this.props.gl && this.canvas) {
+    if (!this._isMultiCanvasMode() && this.canvas && this.canvas === this._ownedCanvas) {
       // remove internally created canvas
       this.canvas.parentElement?.removeChild(this.canvas);
       this.canvas = null;
+      this._ownedCanvas = null;
     }
   }
 
   /** Partially update props */
   setProps(props: DeckProps<ViewsT>): void {
     this.stats.get('setProps Time').timeStart();
+    const previousCanvases = this.props.canvases;
 
     if ('onLayerHover' in props) {
       log.removed('onLayerHover', 'onHover')();
@@ -491,7 +508,23 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
 
     // Merge with existing props
     Object.assign(this.props, props);
+    this._validateCanvasConfiguration(this.props);
     this._validateInternalPickingMode();
+
+    if (
+      this.device &&
+      !this.props.device &&
+      !this.props.gl &&
+      this._isMultiCanvasProp(previousCanvases) !== this._isMultiCanvasMode()
+    ) {
+      this._rebuildDeckOwnedDevice();
+      this.stats.get('setProps Time').timeEnd();
+      return;
+    }
+
+    if (this.device) {
+      this._syncCanvasTargets();
+    }
 
     // Update CSS size of canvas
     this._setCanvasSize(this.props);
@@ -502,12 +535,16 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       height: number;
       views: View[];
       viewState: ViewStateObject<ViewsT> | null;
+      canvasMetrics: Record<string, {width: number; height: number}>;
+      eventManagers: Record<string, EventManager>;
     } = Object.create(this.props);
     Object.assign(resolvedProps, {
       views: this._getViews(),
       width: this.width,
       height: this.height,
-      viewState: this._getViewState()
+      viewState: this._getViewState(),
+      canvasMetrics: this._getCanvasMetrics(),
+      eventManagers: this.eventManagers
     });
 
     if (props.device && props.device.id !== this.device?.id) {
@@ -534,6 +571,9 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
 
     if (props.useDevicePixels !== undefined && this.device?.canvasContext?.setProps) {
       this.device.canvasContext.setProps({useDevicePixels: props.useDevicePixels});
+      for (const target of Object.values(this._canvasTargets)) {
+        target.presentationContext.setProps({useDevicePixels: props.useDevicePixels});
+      }
     }
 
     // If initialized, update sub manager props
@@ -638,14 +678,36 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   /** Get a list of viewports that are currently rendered.
    * @param rect If provided, only returns viewports within the given bounding box.
    */
-  getViewports(rect?: {x: number; y: number; width?: number; height?: number}): Viewport[] {
+  getViewports(rect?: {
+    x: number;
+    y: number;
+    width?: number;
+    height?: number;
+    canvasId?: string;
+  }): Viewport[] {
     assert(this.viewManager);
     return this.viewManager.getViewports(rect);
   }
 
-  /** Get the current canvas element. */
+  /**
+   * Get the current canvas element.
+   *
+   * In multi-canvas mode this returns the first configured presentation canvas.
+   */
   getCanvas(): HTMLCanvasElement | null {
     return this.canvas;
+  }
+
+  /**
+   * Get the event manager associated with the specified view or the default canvas.
+   *
+   * In multi-canvas mode, controllers are bound to one event manager per presentation canvas.
+   */
+  getEventManager(viewId?: string): EventManager | null {
+    if (!viewId || !this.viewManager) {
+      return this.eventManager;
+    }
+    return this.eventManagers[this.viewManager.getCanvasId(viewId) || ''] || this.eventManager;
   }
 
   /** Query the object rendered on top at a given point */
@@ -654,6 +716,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     x: number;
     /** y position in pixels */
     y: number;
+    /** Canvas id when querying a presented canvas in multi-canvas mode. */
+    canvasId?: string;
     /** Radius of tolerance in pixels. Default `0`. */
     radius?: number;
     /** A list of layer ids to query from. If not specified, then all pickable and visible layers are queried. */
@@ -678,6 +742,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     width?: number;
     /** Height of the bounding box in pixels. Default `1` */
     height?: number;
+    /** Canvas id when querying a presented canvas in multi-canvas mode. */
+    canvasId?: string;
     /** A list of layer ids to query from. If not specified, then all pickable and visible layers are queried. */
     layerIds?: string[];
     /** If specified, limits the number of objects that can be returned. */
@@ -695,6 +761,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     x: number;
     /** y position in pixels */
     y: number;
+    /** Canvas id when querying a presented canvas in multi-canvas mode. */
+    canvasId?: string;
     /** Radius of tolerance in pixels. Default `0`. */
     radius?: number;
     /** A list of layer ids to query from. If not specified, then all pickable and visible layers are queried. */
@@ -717,6 +785,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     y: number;
     /** Radius of tolerance in pixels. Default `0`. */
     radius?: number;
+    /** Canvas id when querying a presented canvas in multi-canvas mode. */
+    canvasId?: string;
     /** Specifies the max number of objects to return. Default `10`. */
     depth?: number;
     /** A list of layer ids to query from. If not specified, then all pickable and visible layers are queried. */
@@ -741,6 +811,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     width?: number;
     /** Height of the bounding box in pixels. Default `1` */
     height?: number;
+    /** Canvas id when querying a presented canvas in multi-canvas mode. */
+    canvasId?: string;
     /** A list of layer ids to query from. If not specified, then all pickable and visible layers are queried. */
     layerIds?: string[];
     /** If specified, limits the number of objects that can be returned. */
@@ -753,13 +825,23 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
    * Internal method used by controllers to pick 3D position at a screen coordinate
    * @private
    */
-  private _pickPositionForController(x: number, y: number): {coordinate?: number[]} | null {
+  private _pickPositionForController(
+    x: number,
+    y: number,
+    viewId?: string
+  ): {coordinate?: number[]} | null {
     const internalPickingMode = this._getInternalPickingMode();
     if (internalPickingMode !== 'sync') {
       return null;
     }
 
-    return this.pickObject({x, y, radius: 0, unproject3D: true});
+    return this.pickObject({
+      x,
+      y,
+      radius: 0,
+      unproject3D: true,
+      canvasId: viewId ? this.viewManager?.getCanvasId(viewId) : undefined
+    });
   }
 
   /** Experimental
@@ -845,6 +927,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     return {
       x,
       y,
+      canvasId: opts.canvasId,
       radius: this.props.pickingRadius,
       unproject3D: this._shouldUnproject3D(layers),
       ...opts
@@ -862,6 +945,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   private _getLastPointerDownPickingInfo(
     x: number,
     y: number,
+    canvasId?: string,
     layers = this.layerManager?.getLayers() || []
   ): PickingInfo {
     return this.deckPicker!.getLastPickedObject(
@@ -869,7 +953,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
         x,
         y,
         layers,
-        viewports: this.getViewports({x, y})
+        viewports: this.getViewports({x, y, canvasId})
       },
       this._lastPointerDownInfo
     ) as PickingInfo;
@@ -943,18 +1027,27 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     assert(this.deckPicker);
 
     const {stats} = this;
+    const canvasId = this._isMultiCanvasMode() ? opts.canvasId || this._getDefaultCanvasId() : opts.canvasId;
+    const devicePixelRatio = this._getCanvasTarget(canvasId)?.presentationContext.cssToDeviceRatio();
 
     stats.get('Pick Count').incrementCount();
     stats.get(statKey).timeStart();
+    this._resizeForCanvasTarget(canvasId);
 
     const infos = this.deckPicker[method]({
       // layerManager, viewManager and effectManager are always defined if deckPicker is
       layers: this.layerManager!.getLayers(opts),
       views: this.viewManager!.getViews(),
-      viewports: this.getViewports(opts),
+      viewports: this.getViewports({
+        ...(opts as {x: number; y: number; width?: number; height?: number}),
+        canvasId
+      }),
       onViewportActive: this.layerManager!.activateViewport,
       effects: this.effectManager!.getEffects(),
-      ...opts
+      ...opts,
+      canvasId,
+      devicePixelRatio,
+      shaderModuleProps: devicePixelRatio ? {project: {devicePixelRatio}} : undefined
     });
 
     stats.get(statKey).timeEnd();
@@ -984,23 +1077,208 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     assert(this.deckPicker);
 
     const {stats} = this;
+    const canvasId = this._isMultiCanvasMode() ? opts.canvasId || this._getDefaultCanvasId() : opts.canvasId;
+    const devicePixelRatio = this._getCanvasTarget(canvasId)?.presentationContext.cssToDeviceRatio();
 
     stats.get('Pick Count').incrementCount();
     stats.get(statKey).timeStart();
+    this._resizeForCanvasTarget(canvasId);
 
     const infos = this.deckPicker[method]({
       // layerManager, viewManager and effectManager are always defined if deckPicker is
       layers: this.layerManager!.getLayers(opts),
       views: this.viewManager!.getViews(),
-      viewports: this.getViewports(opts),
+      viewports: this.getViewports({
+        ...(opts as {x: number; y: number; width?: number; height?: number}),
+        canvasId
+      }),
       onViewportActive: this.layerManager!.activateViewport,
       effects: this.effectManager!.getEffects(),
-      ...opts
+      ...opts,
+      canvasId,
+      devicePixelRatio,
+      shaderModuleProps: devicePixelRatio ? {project: {devicePixelRatio}} : undefined
     });
 
     stats.get(statKey).timeEnd();
 
     return infos;
+  }
+
+  private _isMultiCanvasProp(
+    canvases: DeckProps<ViewsT>['canvases'] | Required<DeckProps<ViewsT>>['canvases']
+  ): boolean {
+    return canvases !== undefined;
+  }
+
+  private _isMultiCanvasMode(): boolean {
+    return this._isMultiCanvasProp(this.props.canvases);
+  }
+
+  private _getDefaultCanvasId(): string {
+    return this._canvasManager.defaultCanvasId;
+  }
+
+  private _validateCanvasConfiguration(props: DeckProps<ViewsT>): void {
+    if (!this._isMultiCanvasProp(props.canvases)) {
+      return;
+    }
+
+    if (props.gl) {
+      throw new Error(
+        '`canvases` is not supported with `gl`. Provide neither and let Deck create the device.'
+      );
+    }
+
+    if (props.device?.canvasContext && !props.device.getDefaultCanvasContext().offscreenCanvas) {
+      throw new Error(
+        '`canvases` requires an offscreen-backed default canvas context when using an external device.'
+      );
+    }
+  }
+
+  private _createEventManager(root: HTMLElement): EventManager {
+    const eventManager = new EventManager(root, {
+      touchAction: this.props.touchAction,
+      recognizers: Object.keys(RECOGNIZERS).map((eventName: string) => {
+        const [RecognizerConstructor, defaultOptions, recognizeWith, requestFailure] =
+          RECOGNIZERS[eventName];
+        const optionsOverride = this.props.eventRecognizerOptions?.[eventName];
+        const options = {...defaultOptions, ...optionsOverride, event: eventName};
+        return {
+          recognizer: new RecognizerConstructor(options),
+          recognizeWith,
+          requestFailure
+        };
+      }),
+      events: {
+        pointerdown: this._onPointerDown,
+        pointermove: this._onPointerMove,
+        pointerleave: this._onPointerMove
+      }
+    });
+
+    for (const eventType in EVENT_HANDLERS) {
+      eventManager.on(eventType, this._onEvent);
+    }
+    return eventManager;
+  }
+
+  private _destroyCanvasTargets(): void {
+    this._canvasManager.finalize();
+    this.eventManagers = {};
+    this.eventManager = null;
+    if (this._isMultiCanvasMode()) {
+      this.canvas = null;
+    }
+  }
+
+  private _syncCanvasTargets(): void {
+    if (!this.device) {
+      return;
+    }
+
+    if (!this._isMultiCanvasMode()) {
+      this._destroyCanvasTargets();
+      return;
+    }
+
+    this._canvasManager.sync({
+      device: this.device,
+      canvases: this.props.canvases,
+      useDevicePixels: this.props.useDevicePixels
+    });
+    this.eventManagers = this._canvasManager.eventManagers;
+    this.eventManager = this._canvasManager.eventManager;
+    this.canvas = this._canvasManager.canvas;
+  }
+
+  private _getCanvasMetrics(): Record<string, {width: number; height: number}> {
+    return this._isMultiCanvasMode()
+      ? this._canvasManager.getMetrics(this.width, this.height)
+      : {[this._getDefaultCanvasId()]: {width: this.width, height: this.height}};
+  }
+  private _getCanvasIdFromEvent(event?: {rootElement?: HTMLElement | null} | null): string | undefined {
+    return this._canvasManager.getCanvasIdFromEvent(event?.rootElement);
+  }
+
+  private _getCanvasTarget(canvasId?: string): CanvasTarget | null {
+    if (!this._isMultiCanvasMode()) {
+      return null;
+    }
+    return this._canvasManager.getTarget(canvasId);
+  }
+
+  private _resizeForCanvasTarget(canvasId?: string): void {
+    const target = this._getCanvasTarget(canvasId);
+    if (!target || !this.device?.canvasContext) {
+      return;
+    }
+
+    const [width, height] = target.presentationContext.getDrawingBufferSize();
+    this.device.canvasContext.setDrawingBufferSize(width, height);
+  }
+
+  private _teardownManagers(): void {
+    this.layerManager?.finalize();
+    this.layerManager = null;
+
+    this.viewManager?.finalize();
+    this.viewManager = null;
+
+    this.effectManager?.finalize();
+    this.effectManager = null;
+
+    this.deckRenderer?.finalize();
+    this.deckRenderer = null;
+
+    this.deckPicker?.finalize();
+    this.deckPicker = null;
+
+    if (!this._isMultiCanvasMode()) {
+      this.eventManager?.destroy();
+    }
+    this.eventManager = null;
+    this.eventManagers = {};
+
+    this.widgetManager?.finalize();
+    this.widgetManager = null;
+  }
+
+  private _rebuildDeckOwnedDevice(): void {
+    const ownedCanvas = this._ownedCanvas;
+    this.animationLoop?.stop();
+    this.animationLoop?.destroy();
+    this.animationLoop = null;
+    this._teardownManagers();
+    this._destroyCanvasTargets();
+    this.device = null;
+    this.canvas = null;
+
+    if (ownedCanvas) {
+      ownedCanvas.remove();
+      this._ownedCanvas = null;
+    }
+
+    const deviceOrPromise = this._createDevice(this.props);
+    this.animationLoop = this._createAnimationLoop(deviceOrPromise, this.props);
+    this.animationLoop.start();
+  }
+
+  private _createDeviceCanvas(props: DeckProps<ViewsT>): HTMLCanvasElement | OffscreenCanvas {
+    if (this._isMultiCanvasMode()) {
+      const OffscreenCanvasConstructor = globalThis.OffscreenCanvas;
+      if (!OffscreenCanvasConstructor) {
+        throw new Error('`canvases` requires OffscreenCanvas support.');
+      }
+      const width =
+        typeof props.width === 'number' && Number.isFinite(props.width) ? props.width : 1;
+      const height =
+        typeof props.height === 'number' && Number.isFinite(props.height) ? props.height : 1;
+      return new OffscreenCanvasConstructor(width, height);
+    }
+
+    return this._createCanvas(props);
   }
 
   /** Resolve props.canvas to element */
@@ -1027,6 +1305,9 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       }
       const parent = props.parent || document.body;
       parent.appendChild(canvas);
+      this._ownedCanvas = canvas;
+    } else {
+      this._ownedCanvas = null;
     }
 
     Object.assign(canvas.style, props.style);
@@ -1036,6 +1317,9 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
 
   /** Updates canvas width and/or height, if provided as props */
   private _setCanvasSize(props: Required<DeckProps<ViewsT>>): void {
+    if (this._isMultiCanvasMode()) {
+      return;
+    }
     if (!this.canvas) {
       return;
     }
@@ -1056,6 +1340,10 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
 
   /** If canvas size has changed, reads out the new size and update */
   private _updateCanvasSize(): void {
+    if (this._isMultiCanvasMode()) {
+      this._updateCanvasMetrics();
+      return;
+    }
     const {canvas} = this;
     if (!canvas) {
       return;
@@ -1068,10 +1356,51 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       this.width = newWidth;
       // @ts-expect-error private assign to read-only property
       this.height = newHeight;
-      this.viewManager?.setProps({width: newWidth, height: newHeight});
+      this.viewManager?.setProps({
+        width: newWidth,
+        height: newHeight,
+        canvasMetrics: {[this._getDefaultCanvasId()]: {width: newWidth, height: newHeight}}
+      });
       // Make sure that any new layer gets initialized with the current viewport
       this.layerManager?.activateViewport(this.getViewports()[0]);
       this.props.onResize({width: newWidth, height: newHeight});
+    }
+  }
+
+  private _updateCanvasMetrics(): void {
+    const defaultCanvasId = this._getDefaultCanvasId();
+    let resized = false;
+
+    for (const target of Object.values(this._canvasTargets)) {
+      const width = target.canvas.clientWidth || target.canvas.width;
+      const height = target.canvas.clientHeight || target.canvas.height;
+      if (width !== target.width || height !== target.height) {
+        target.width = width;
+        target.height = height;
+        resized = true;
+      }
+    }
+
+    const defaultTarget = this._canvasTargets[defaultCanvasId];
+    const newWidth = defaultTarget?.width || 0;
+    const newHeight = defaultTarget?.height || 0;
+    if (newWidth !== this.width || newHeight !== this.height) {
+      // @ts-expect-error private assign to read-only property
+      this.width = newWidth;
+      // @ts-expect-error private assign to read-only property
+      this.height = newHeight;
+      resized = true;
+      this.props.onResize({width: newWidth, height: newHeight});
+    }
+
+    if (resized) {
+      this._needsRedraw = 'Canvas resized';
+      this.viewManager?.setProps({
+        width: this.width,
+        height: this.height,
+        canvasMetrics: this._getCanvasMetrics()
+      });
+      this.layerManager?.activateViewport(this.getViewports()[0]);
     }
   }
 
@@ -1092,7 +1421,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     return new AnimationLoop({
       device: deviceOrPromise,
       // TODO v9
-      autoResizeDrawingBuffer: !gl, // do not auto resize external context
+      autoResizeDrawingBuffer: !gl && !this._isMultiCanvasProp(props.canvases), // do not auto resize external or multi-canvas contexts
       autoResizeViewport: false,
       // @ts-expect-error luma.gl needs to accept Promise<void> return value
       onInitialize: context => this._setDevice(context.device),
@@ -1144,7 +1473,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       createCanvasContext: {
         ...defaultCanvasProps,
         ...canvasContextProps,
-        canvas: this._createCanvas(props),
+        canvas: this._createDeviceCanvas(props),
         useDevicePixels: this.props.useDevicePixels,
         autoResize: true
       },
@@ -1193,10 +1522,12 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   /** Internal use only: event handler for pointerdown */
   _onPointerMove = (event: MjolnirPointerEvent) => {
     const {_pickRequest} = this;
+    const canvasId = this._getCanvasIdFromEvent(event);
     if (event.type === 'pointerleave') {
       _pickRequest.x = -1;
       _pickRequest.y = -1;
       _pickRequest.radius = 0;
+      _pickRequest.canvasId = canvasId;
     } else if (event.leftButton || event.rightButton) {
       // Do not trigger onHover callbacks if mouse button is down.
       return;
@@ -1210,6 +1541,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       _pickRequest.x = pos.x;
       _pickRequest.y = pos.y;
       _pickRequest.radius = this.props.pickingRadius;
+      _pickRequest.canvasId = canvasId;
     }
 
     if (this.layerManager) {
@@ -1230,6 +1562,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
         _pickRequest.x,
         _pickRequest.y,
         {
+          canvasId: _pickRequest.canvasId,
           radius: _pickRequest.radius,
           mode: _pickRequest.mode
         },
@@ -1239,6 +1572,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       const hoverPickSequence = ++this._hoverPickSequence;
 
       _pickRequest.event = null;
+      _pickRequest.canvasId = undefined;
 
       if (!internalPickingMode) {
         return;
@@ -1260,9 +1594,17 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   }
 
   private _updateCursor(): void {
+    const cursor = this.props.getCursor(this.cursorState);
+    if (this._isMultiCanvasMode()) {
+      for (const target of Object.values(this._canvasTargets)) {
+        target.canvas.style.cursor = cursor;
+      }
+      return;
+    }
+
     const container = this.props.parent || this.canvas;
     if (container) {
-      container.style.cursor = this.props.getCursor(this.cursorState);
+      container.style.cursor = cursor;
     }
   }
 
@@ -1275,8 +1617,10 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       return;
     }
 
-    // if external context...
-    if (!this.canvas) {
+    if (this._isMultiCanvasMode()) {
+      this._syncCanvasTargets();
+    } else if (!this.canvas) {
+      // if external context...
       this.canvas = this.device.canvasContext?.canvas as HTMLCanvasElement;
 
       // external canvas may not be in DOM
@@ -1312,35 +1656,20 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
     timeline.play();
     this.animationLoop.attachTimeline(timeline);
 
-    const eventRoot =
-      this.props.parent?.querySelector<HTMLDivElement>('.deck-events-root') || this.canvas;
-    this.eventManager = new EventManager(eventRoot, {
-      touchAction: this.props.touchAction,
-      recognizers: Object.keys(RECOGNIZERS).map((eventName: string) => {
-        // Resolve recognizer settings
-        const [RecognizerConstructor, defaultOptions, recognizeWith, requestFailure] =
-          RECOGNIZERS[eventName];
-        const optionsOverride = this.props.eventRecognizerOptions?.[eventName];
-        const options = {...defaultOptions, ...optionsOverride, event: eventName};
-        return {
-          recognizer: new RecognizerConstructor(options),
-          recognizeWith,
-          requestFailure
-        };
-      }),
-      events: {
-        pointerdown: this._onPointerDown,
-        pointermove: this._onPointerMove,
-        pointerleave: this._onPointerMove
-      }
-    });
-    for (const eventType in EVENT_HANDLERS) {
-      this.eventManager.on(eventType, this._onEvent);
+    if (!this._isMultiCanvasMode()) {
+      const eventRoot =
+        this.props.parent?.querySelector<HTMLDivElement>('.deck-events-root') || this.canvas;
+      this.eventManager = eventRoot ? this._createEventManager(eventRoot) : null;
+      this.eventManagers = this.eventManager
+        ? {[this._getDefaultCanvasId()]: this.eventManager}
+        : {};
     }
 
     this.viewManager = new ViewManager({
       timeline,
       eventManager: this.eventManager,
+      eventManagers: this.eventManagers,
+      canvasMetrics: this._getCanvasMetrics(),
       onViewStateChange: this._onViewStateChange.bind(this),
       onInteractionStateChange: this._onInteractionStateChange.bind(this),
       pickPosition: this._pickPositionForController.bind(this),
@@ -1398,6 +1727,8 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       views?: {[viewId: string]: View};
       pass?: string;
       effects?: Effect[];
+      shaderModuleProps?: any;
+      renderPassId?: string;
       clearStack?: boolean;
       clearCanvas?: boolean;
     }
@@ -1416,7 +1747,42 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       effects: this.effectManager!.getEffects(),
       ...renderOptions
     };
-    this.deckRenderer?.renderLayers(opts);
+
+    if (
+      this._isMultiCanvasMode() &&
+      opts.pass === 'screen' &&
+      !opts.target &&
+      this._canvasTargetOrder.length
+    ) {
+      for (const canvasId of this._canvasTargetOrder) {
+        const canvasViewports = opts.viewports.filter(
+          viewport => this.viewManager!.getCanvasId(viewport.id) === canvasId
+        );
+        if (!canvasViewports.length) {
+          continue;
+        }
+
+        const target = this._canvasTargets[canvasId];
+        this._resizeForCanvasTarget(canvasId);
+        const framebuffer = target.presentationContext.getCurrentFramebuffer();
+        this.deckRenderer?.renderLayers({
+          ...opts,
+          shaderModuleProps: {
+            ...opts.shaderModuleProps,
+            project: {
+              ...opts.shaderModuleProps?.project,
+              devicePixelRatio: target.presentationContext.cssToDeviceRatio()
+            }
+          },
+          renderPassId: `screen-${canvasId}`,
+          target: framebuffer,
+          viewports: canvasViewports
+        });
+        target.presentationContext.present();
+      }
+    } else {
+      this.deckRenderer?.renderLayers(opts);
+    }
 
     if (opts.pass === 'screen') {
       // This method could be called when drawing to picking buffer, texture etc.
@@ -1496,6 +1862,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   _onEvent = (event: MjolnirGestureEvent) => {
     const eventHandlerProp = EVENT_HANDLERS[event.type];
     const pos = event.offsetCenter;
+    const canvasId = this._getCanvasIdFromEvent(event);
 
     if (!eventHandlerProp || !pos || !this.layerManager) {
       return;
@@ -1513,10 +1880,10 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
         event.type === 'click' && this._shouldUnproject3D(layers)
           ? this._getFirstPickedInfo(
               this._pickPointSync(
-                this._getPointPickOptions(pos.x, pos.y, {unproject3D: true}, layers)
+                this._getPointPickOptions(pos.x, pos.y, {unproject3D: true, canvasId}, layers)
               )
             )
-          : this._getLastPointerDownPickingInfo(pos.x, pos.y, layers);
+          : this._getLastPointerDownPickingInfo(pos.x, pos.y, canvasId, layers);
 
       this._dispatchPickingEvent(info, event);
       return;
@@ -1524,7 +1891,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
 
     const pointerDownInfoPromise =
       this._lastPointerDownInfoPromise ||
-      Promise.resolve(this._getLastPointerDownPickingInfo(pos.x, pos.y, layers));
+      Promise.resolve(this._getLastPointerDownPickingInfo(pos.x, pos.y, canvasId, layers));
 
     pointerDownInfoPromise
       .then(info => {
@@ -1536,6 +1903,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
   /** Internal use only: evnet handler for pointerdown */
   _onPointerDown = (event: MjolnirPointerEvent) => {
     const pos = event.offsetCenter;
+    const canvasId = this._getCanvasIdFromEvent(event);
     if (!pos) {
       return;
     }
@@ -1552,6 +1920,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       const pickedInfo = this._pickPointSync({
         x: pos.x,
         y: pos.y,
+        canvasId,
         radius: this.props.pickingRadius
       });
       const info = this._getFirstPickedInfo(pickedInfo);
@@ -1560,7 +1929,9 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
       return;
     }
 
-    const pickPromise = this._pickPointAsync(this._getPointPickOptions(pos.x, pos.y, {}, layers))
+    const pickPromise = this._pickPointAsync(
+      this._getPointPickOptions(pos.x, pos.y, {canvasId}, layers)
+    )
       .then(pickResult => this._getFirstPickedInfo(pickResult))
       .then(info => {
         if (pointerDownPickSequence === this._pointerDownPickSequence) {
@@ -1572,7 +1943,7 @@ export default class Deck<ViewsT extends ViewOrViews = null> {
         this.props.onError?.(error);
         const fallbackInfo =
           this.deckPicker && this.viewManager
-            ? this._getLastPointerDownPickingInfo(pos.x, pos.y, layers)
+            ? this._getLastPointerDownPickingInfo(pos.x, pos.y, canvasId, layers)
             : ({} as PickingInfo);
         if (pointerDownPickSequence === this._pointerDownPickSequence) {
           this._lastPointerDownInfo = fallbackInfo;
