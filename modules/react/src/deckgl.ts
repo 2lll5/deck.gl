@@ -59,6 +59,7 @@ type CanvasHost = {
   canvas?: HTMLCanvasElement;
 };
 
+/** Normalize the React `canvases` prop into ids plus optional DOM canvas handles. */
 function getCanvasHosts(canvases?: (string | HTMLCanvasElement)[]): CanvasHost[] {
   return (canvases || []).map((canvas, index) =>
     typeof canvas === 'string'
@@ -70,6 +71,7 @@ function getCanvasHosts(canvases?: (string | HTMLCanvasElement)[]): CanvasHost[]
   );
 }
 
+/** Mount an individual multi-canvas host, optionally adopting an existing canvas element. */
 function MultiCanvasHost({
   host,
   canvasStyle,
@@ -86,7 +88,7 @@ function MultiCanvasHost({
 
   useIsomorphicLayoutEffect(() => {
     if (!host.canvas || !hostRef.current) {
-      return;
+      return undefined;
     }
 
     if (!restoreRef.current) {
@@ -111,7 +113,7 @@ function MultiCanvasHost({
 
   useIsomorphicLayoutEffect(() => {
     if (!host.canvas) {
-      return;
+      return undefined;
     }
 
     Object.assign(host.canvas.style, canvasStyle, {
@@ -120,6 +122,8 @@ function MultiCanvasHost({
       width: '100%',
       height: '100%'
     });
+
+    return undefined;
   }, [host.canvas, canvasStyle]);
 
   return createElement(

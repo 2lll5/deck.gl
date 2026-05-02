@@ -21,8 +21,12 @@ type DeckWithInternals = {
   _onViewStateChange: (params: {viewId: string} & Record<string, unknown>) => void;
 };
 
-// Iterate over views and reposition children associated with views
-// TODO - Can we supply a similar function for the non-React case?
+/**
+ * Group React children by view and canvas, then wrap them in DOM containers that track the
+ * resolved viewport rectangles for the current frame.
+ *
+ * TODO - Can we supply a similar function for the non-React case?
+ */
 export default function positionChildrenUnderViews<ViewsT extends ViewOrViews>({
   children,
   deck,
