@@ -55,6 +55,8 @@ Presentation canvases to use when rendering a single `DeckGL` instance into mult
 
 This prop mirrors [`Deck.canvases`](../core/deck.md#canvases). When supplied, `DeckGL` creates one DOM host per canvas, binds each [`View`](../core/view.md) to a target canvas through `view.props.canvasId`, and renders view children such as `react-map-gl` maps into the matching canvas host automatically.
 
+Like [`Deck.canvases`](../core/deck.md#canvases), this prop can be updated after mount. `DeckGL` keeps the per-canvas DOM hosts in sync with the current array.
+
 ### React Context
 
 #### `ContextProvider` (React.Component, optional) {#contextprovider}
