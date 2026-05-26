@@ -183,6 +183,7 @@ export default class LayersPass extends Pass {
       isPicking = false,
       layerFilter,
       cullRect,
+      views,
       effects,
       shaderModuleProps
     }: LayersPassRenderOptions,
@@ -230,6 +231,7 @@ export default class LayersPass extends Pass {
         layerParam.layerParameters = {
           ...defaultParams,
           ...layer.context.deck?.props.parameters,
+          ...views?.[viewport.id]?.props.parameters,
           ...this.getLayerParameters(layer, layerIndex, viewport)
         };
       }
@@ -452,6 +454,15 @@ export default class LayersPass extends Pass {
           shaderModuleProps,
           effect.getShaderModuleProps?.(layer, shaderModuleProps)
         );
+      }
+    }
+
+    // Ensure all default shader modules have an entry so their getUniforms is called.
+    // Without this, default modules added by effects (e.g. terrain) may not get their
+    // bindings set when rendered in passes that don't include those effects (e.g. mask pass).
+    for (const module of layer.context.defaultShaderModules) {
+      if (!(module.name in shaderModuleProps)) {
+        shaderModuleProps[module.name] = {};
       }
     }
 

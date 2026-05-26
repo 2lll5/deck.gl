@@ -17,6 +17,14 @@ deck.gl can now render a single `Deck` or `DeckGL` instance into multiple HTML c
 
 There is a new multi-canvas cities example in the repository that shows four independently navigable city maps with shared scatterplot interactions and a toggle between `react-map-gl` basemaps and `BasemapLayer` overlays: [test/apps/multi-canvas-cities](https://github.com/visgl/deck.gl/tree/master/test/apps/multi-canvas-cities).
 
+### Views
+
+- Views now support a `parameters` prop for per-view GPU draw state overrides. `GlobeView` uses this to enable back-face culling by default, and applications can override it with `new GlobeView({parameters: {cullMode: 'none'}})`.
+
+### Performance
+
+- Picking in most instanced layers no longer allocates an `instancePickingColors` attribute buffer, instead using shader builtins `instance_index` / `gl_InstanceID`, reducing memory usage and initialization times.
+
 ## deck.gl v9.3
 
 Release date: April 13, 2026
